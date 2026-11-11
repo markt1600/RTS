@@ -305,6 +305,21 @@ export class UI {
     if (!shift) { this.mode = null; this.panelKey = ''; }
   }
 
+  /** placeable, and not on top of something already queued */
+  private free(def: UnitDef, cx: number, cz: number): boolean {
+    if (!this.game.canPlace(def, cx, cz, this.me)) return false;
+    const w = def.cls === 'building' ? def.fw : 3, h = def.cls === 'building' ? def.fh : 3;
+    for (const u of this.game.units) {
+      if (u.team !== this.me || !u.def.bp) continue;
+      for (const o of u.orders) {
+        if (o.type !== 'build' || o.target || !o.def) continue;
+        if (o.def === def && o.cx === cx && o.cz === cz) continue; // same plan: other builders may join it
+        const ow = o.def.cls === 'building' ? o.def.fw : 3, oh = o.def.cls === 'building' ? o.def.fh : 3;
+        if (cx < o.cx! + ow && cx + w > o.cx! && cz < o.cz! + oh && cz + h > o.cz!) return false;
+      }
+    }
+    return true;
+  }
   private placeCell(sx: number, sy: number): { cx: number; cz: number; ok: boolean } | null {
     const def = this.placing!, p = this.r.pick(sx, sy); if (!p) return null;
     let cx: number, cz: number;
@@ -314,7 +329,7 @@ export class UI {
     } else if (def.cls !== 'building') { cx = Math.floor(p.x / CELL) - 1; cz = Math.floor(p.z / CELL) - 1; }
     else { cx = Math.round(p.x / CELL - def.fw / 2); cz = Math.round(p.z / CELL - def.fh / 2); }
     const explored = (this.me.vis[this.game.map.cellOf((cx + 0.5) * CELL, (cz + 0.5) * CELL)] & 1) !== 0;
-    return { cx, cz, ok: explored && this.game.canPlace(def, cx, cz, this.me) };
+    return { cx, cz, ok: explored && this.free(def, cx, cz) };
   }
   private rowCells(a: { cx: number; cz: number }, b: { cx: number; cz: number }, def: UnitDef) {
     const out: { cx: number; cz: number }[] = [];
@@ -326,7 +341,7 @@ export class UI {
   }
   private commitPlace(e: MouseEvent) {
     const def = this.placing!, end = this.placeCell(e.clientX, e.clientY); if (!end) return;
-    const cells = this.rowCells(this.placeStart!, end, def).filter(c => this.game.canPlace(def, c.cx, c.cz, this.me));
+    const cells = this.rowCells(this.placeStart!, end, def).filter(c => this.free(def, c.cx, c.cz));
     const bs = this.mine().filter(u => u.def.builds.includes(def.id) && !u.def.factory);
     if (!cells.length || !bs.length) { this.audio.ui('error'); return; }
     cells.forEach((c, i) => { for (const u of bs) this.game.giveBuild(u, def, c.cx, c.cz, e.shiftKey || i > 0); });
@@ -435,7 +450,7 @@ export class UI {
       if (end) for (const c of this.rowCells(this.placeStart, end, this.placing)) {
         const def = this.placing, wx = (c.cx + def.fw / 2) * CELL, wz = (c.cz + def.fh / 2) * CELL;
         r.project(wx, map.groundY(wx, wz) + 1, wz, p);
-        if (p.ok) { ctx.fillStyle = g.canPlace(def, c.cx, c.cz, me) ? 'rgba(80,255,140,0.8)' : 'rgba(255,70,50,0.8)'; ctx.fillRect(p.x - 5, p.y - 5, 10, 10); }
+        if (p.ok) { ctx.fillStyle = this.free(def, c.cx, c.cz) ? 'rgba(80,255,140,0.8)' : 'rgba(255,70,50,0.8)'; ctx.fillRect(p.x - 5, p.y - 5, 10, 10); }
       }
     }
     const d = this.drag;

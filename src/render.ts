@@ -241,7 +241,9 @@ export class Renderer {
   private lights: { l: THREE.PointLight; life: number; max: number; peak: number }[] = []; private fireLight!: THREE.PointLight;
   private debris!: THREE.InstancedMesh; private dPos = new Float32Array(360 * 3); private dVel = new Float32Array(360 * 3); private dRot = new Float32Array(360 * 4); private dLife = new Float32Array(360); private dSize = new Float32Array(360); private dHead = 0;
   private later: { t: number; fn: () => void }[] = []; shake = 0; private sunDir = new THREE.Vector3(0.55, 0.75, 0.35).normalize();
-  private grade: ShaderPass | null = null; private plate!: { map: THREE.Texture; normal: THREE.Texture }; private cleared = new WeakSet<Unit>();
+  private grade: ShaderPass | null = null;
+  private plans = new Map<string, THREE.Group>(); private planMat = new THREE.MeshBasicMaterial({ color: 0x7fd4ff, transparent: true, opacity: 0.3, depthWrite: false, fog: false });
+  private planWire = new THREE.MeshBasicMaterial({ color: 0xbfeaff, wireframe: true, transparent: true, opacity: 0.16, depthWrite: false, fog: false }); private plate!: { map: THREE.Texture; normal: THREE.Texture }; private cleared = new WeakSet<Unit>();
   fire: Particles; smoke: Particles;
   private beams: Beam[] = []; private beamIM: THREE.InstancedMesh;
   private projIM: THREE.InstancedMesh; private ringIM: THREE.InstancedMesh; private rings: Ring[] = [];
@@ -778,6 +780,28 @@ export class Renderer {
     }
     for (const im of this.ims.values()) { im.count = (im as any)._n; im.instanceMatrix.needsUpdate = true; }
     this.selIM.count = nSel; this.selIM.instanceMatrix.needsUpdate = true; if (this.selIM.instanceColor) this.selIM.instanceColor.needsUpdate = true;
+    // planned structures: translucent outlines for every queued build that has not been started yet
+    const want = new Set<string>();
+    for (const u of g.units) {
+      if (u.team !== me || u.dead || !u.def.bp) continue;
+      for (const o of u.orders) {
+        if (o.type !== 'build' || o.target || !o.def) continue;
+        const key = o.def.id + '|' + o.cx + '|' + o.cz; want.add(key);
+        if (this.plans.has(key)) continue;
+        const d = o.def, geo = geosFor(d, me.id), grp = new THREE.Group();
+        const add = (ge: THREE.BufferGeometry | null, piv?: number[]) => {
+          if (!ge) return;
+          const a = new THREE.Mesh(ge, this.planMat), b = new THREE.Mesh(ge, this.planWire);
+          if (piv) { a.position.fromArray(piv); b.position.fromArray(piv); }
+          a.renderOrder = b.renderOrder = 7; grp.add(a, b);
+        };
+        add(geo.b); add(geo.t, d.model.tp); add(geo.s, d.model.sp);
+        grp.position.set(o.x, d.water ? map.waterY - 0.3 : map.groundY(o.x, o.z) + 0.2, o.z);
+        this.scene.add(grp); this.plans.set(key, grp);
+      }
+    }
+    for (const [key, grp] of this.plans) if (!want.has(key)) { this.scene.remove(grp); this.plans.delete(key); }
+    this.planMat.opacity = 0.26 + 0.08 * Math.sin(T * 3);
     for (const [u, f] of this.frames) if (!seenFrames.has(u)) { this.scene.remove(f.group); f.solid.dispose(); this.frames.delete(u); }
 
     // wrecks
