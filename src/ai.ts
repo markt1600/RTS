@@ -33,6 +33,7 @@ export class AI {
   private enemyAir = 0; private enemyDef = 0; private lastDefend = -999; private lastRaid = 0; private lastScout = 0;
   private rallyX = 0; private rallyZ = 0; private firstFac: string;
   private rng: () => number;
+  private yard: { cx: number; cz: number } | null = null;
 
   constructor(game: Game, team: Team) {
     this.game = game; this.team = team; this.P = LEVELS[team.level];
@@ -41,8 +42,30 @@ export class AI {
     this.firstFac = this.rng() < 0.5 ? 'foundry' : 'works';
     const c = game.map.size / 2, dx = c - team.startX, dz = c - team.startZ, l = Math.hypot(dx, dz) || 1;
     this.rallyX = team.startX + dx / l * 110; this.rallyZ = team.startZ + dz / l * 110;
+    this.yard = this.findYard();
   }
 
+  /** a coastal shipyard site on a large body of water near the base */
+  private findYard(): { cx: number; cz: number } | null {
+    const m = this.game.map, n = m.n, def = DEFS.shipyard;
+    const bx = Math.round(this.team.startX / CELL), bz = Math.round(this.team.startZ / CELL);
+    let best: { cx: number; cz: number } | null = null, bd = 1e9;
+    for (let cz = Math.max(2, bz - 34); cz < Math.min(n - 8, bz + 34); cz++) for (let cx = Math.max(2, bx - 34); cx < Math.min(n - 8, bx + 34); cx++) {
+      const r = m.regionW[cz * n + cx];
+      if (r < 0 || m.regionWSize[r] < 500) continue;
+      const d = Math.hypot(cx + 2.5 - bx, cz + 2.5 - bz); if (d >= bd) continue;
+      let ok = true;
+      for (let j = 0; j < def.fh + 3 && ok; j++) for (let i = 0; i < def.fw; i++) if (!m.passW[(cz + j) * n + cx + i]) { ok = false; break; }
+      if (!ok) continue;
+      let shore = false;
+      for (let j = -3; j < def.fh + 3 && !shore; j++) for (let i = -3; i < def.fw + 3; i++) {
+        const x = cx + i, z = cz + j;
+        if (m.inCells(x, z) && m.pass[z * n + x] && m.region[z * n + x] === m.mainRegion) { shore = true; break; }
+      }
+      if (shore) { bd = d; best = { cx, cz }; }
+    }
+    return best;
+  }
   private have(id: string) { return (this.cnt[id] || 0) + (this.pend[id] || 0); }
   private secs() { return this.game.tick / TICK; }
 
@@ -183,7 +206,7 @@ export class AI {
     const mex = this.have('extractor') + this.have('deepext');
     const pendE = (this.pend.solar || 0) * 20 + (this.pend.wind || 0) * 12 + (this.pend.fusion || 0) * 600;
     const eProj = tm.incE + pendE;
-    const nFac = this.have('foundry') + this.have('works') + this.have('aerodrome') + this.have('advforge');
+    const nFac = this.have('foundry') + this.have('works') + this.have('aerodrome') + this.have('advforge') + this.have('shipyard');
     const pendMex = (this.pend.extractor || 0) + (this.pend.deepext || 0);
     const eNeed = 45 + nFac * 65 + this.builders.length * 12;
     const eLow = eProj < eNeed || eProj < tm.useE * 1.15 + 15 || (tm.energy < tm.stE * 0.15 && tm.incE < tm.useE + pendE);
@@ -213,6 +236,9 @@ export class AI {
       else if (this.have('advforge') && this.have('advforge') < 2 && tm.incM > 22) id = 'advforge';
       else if (floatM) id = this.rng() < 0.5 ? 'foundry' : 'works';
       if (id && this.tryBuild(b, id, undefined, undefined, 6, 30)) return;
+    }
+    if (this.yard && P.air && secs > 330 && tm.incM > 10 && tm.incE > 200 && !this.have('shipyard') && b.def.builds.includes('shipyard') && !prime) {
+      if (g.canPlace(DEFS.shipyard, this.yard.cx, this.yard.cz, tm)) { g.giveBuild(b, DEFS.shipyard, this.yard.cx, this.yard.cz); this.pend.shipyard = 1; return; }
     }
     // defences
     const nDef = this.have('sentry') + this.have('bastion') * 2 + this.have('flak');
@@ -267,6 +293,10 @@ export class AI {
         break;
       case 'aerodrome':
         id = pick([['kestrel', this.have('kestrel') < 1 ? 1.5 : 0], ['talon', 1.2 + this.enemyAir * 0.5], ['anvil', 2.2], ['vulture', secs > 600 ? 2 : 0.3]]);
+        break;
+      case 'shipyard':
+        id = pick([['skiff', 2], ['corsair', 3], ['leviathan', tm.incM > 22 ? 1.5 : 0]]);
+        if (this.have('skiff') + this.have('corsair') + this.have('leviathan') > 4 + P.heavy * 3) id = '';
         break;
       case 'advforge':
         if (this.have('archwright') < Math.min(3, 1 + Math.floor(tm.incM / 12))) id = 'archwright';

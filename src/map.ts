@@ -23,6 +23,11 @@ export class GameMap {
   n: number; size: number; hn: number;
   heights!: Float32Array;
   pass!: Uint8Array; block: Uint8Array; region!: Int32Array;
+  /** deep-water passability for ships, and its connected regions */
+  passW!: Uint8Array; regionW!: Int32Array; regionWSize: number[] = [];
+  /** flammable vegetation per cell (0..1) and tree density used by the renderer */
+  fuel!: Float32Array; forest!: Float32Array;
+  wet = 0;
   waterY = -100;
   spots: Spot[] = [];
   starts: { x: number; z: number }[] = [];
@@ -32,7 +37,8 @@ export class GameMap {
   private g: Float32Array; private par: Int32Array; private mark: Uint32Array; private closed: Uint32Array; private sid = 0;
   private hN: number[] = []; private hF: number[] = [];
 
-  constructor(n: number, seed: number, biomeIdx: number) {
+  constructor(n: number, seed: number, biomeIdx: number, wet = 0) {
+    this.wet = wet;
     this.n = n; this.size = n * CELL; this.hn = n * 2 + 1;
     this.biome = BIOMES[biomeIdx]; this.seed = seed;
     this.block = new Uint8Array(n * n);
@@ -68,7 +74,8 @@ export class GameMap {
       const k = clamp((kk[i] - 0.42) * 6, 0, 1);
       H[i] = lerp(t, terr, 0.3 + (terrMax - 0.3) * k) * AMP;
     }
-    this.waterY = this.biome.water < 0 ? -100 : this.biome.water * AMP;
+    const wf = this.biome.water < 0 ? (this.wet ? 0.26 : -1) : this.biome.water + (this.wet ? Math.max(0, 0.13 - attempt * 0.01) : 0);
+    this.waterY = wf < 0 ? -100 : wf * AMP;
     // start positions (4-fold rotational symmetry)
     const sc = Math.round(n * 0.17);
     const startCells: number[][] = [[sc, sc]];
@@ -98,24 +105,38 @@ export class GameMap {
       if (hi - lo < 5.2 && lo > this.waterY + 0.6) { pass[cz * n + cx] = 1; land++; }
     }
     this.pass = pass;
-    // regions
-    const region = new Int32Array(n * n).fill(-1);
-    const stack: number[] = [];
-    let rid = 0; const sizes: number[] = [];
-    for (let s = 0; s < n * n; s++) {
-      if (!pass[s] || region[s] >= 0) continue;
-      let cnt = 0; stack.push(s); region[s] = rid;
-      while (stack.length) {
-        const p = stack.pop()!; cnt++;
-        const px = p % n;
-        if (px > 0 && pass[p - 1] && region[p - 1] < 0) { region[p - 1] = rid; stack.push(p - 1); }
-        if (px < n - 1 && pass[p + 1] && region[p + 1] < 0) { region[p + 1] = rid; stack.push(p + 1); }
-        if (p >= n && pass[p - n] && region[p - n] < 0) { region[p - n] = rid; stack.push(p - n); }
-        if (p < n * n - n && pass[p + n] && region[p + n] < 0) { region[p + n] = rid; stack.push(p + n); }
-      }
-      sizes.push(cnt); rid++;
+    // deep water for ships
+    const passW = new Uint8Array(n * n);
+    if (!this.biome.lava) for (let cz = 1; cz < n - 1; cz++) for (let cx = 1; cx < n - 1; cx++) {
+      let hi = -1e9;
+      for (let j = 0; j <= 2; j++) for (let i = 0; i <= 2; i++) hi = Math.max(hi, H[(cz * 2 + j) * hn + cx * 2 + i]);
+      if (hi < this.waterY - 2.2) passW[cz * n + cx] = 1;
     }
+    this.passW = passW;
+    // regions
+    const label = (pass: Uint8Array, sizes: number[]) => {
+      const region = new Int32Array(n * n).fill(-1);
+      const stack: number[] = [];
+      let rid = 0;
+      for (let s = 0; s < n * n; s++) {
+        if (!pass[s] || region[s] >= 0) continue;
+        let cnt = 0; stack.push(s); region[s] = rid;
+        while (stack.length) {
+          const p = stack.pop()!; cnt++;
+          const px = p % n;
+          if (px > 0 && pass[p - 1] && region[p - 1] < 0) { region[p - 1] = rid; stack.push(p - 1); }
+          if (px < n - 1 && pass[p + 1] && region[p + 1] < 0) { region[p + 1] = rid; stack.push(p + 1); }
+          if (p >= n && pass[p - n] && region[p - n] < 0) { region[p - n] = rid; stack.push(p - n); }
+          if (p < n * n - n && pass[p + n] && region[p + n] < 0) { region[p + n] = rid; stack.push(p + n); }
+        }
+        sizes.push(cnt); rid++;
+      }
+      return region;
+    };
+    const sizes: number[] = [];
+    const region = label(pass, sizes);
     this.region = region;
+    this.regionWSize = []; this.regionW = label(passW, this.regionWSize);
     const r0 = region[startCells[0][1] * n + startCells[0][0]];
     if (r0 < 0) return false;
     for (const [a, b] of startCells) if (region[b * n + a] !== r0) return false;
@@ -123,6 +144,22 @@ export class GameMap {
     this.mainRegion = r0;
     this.starts = startCells.map(([a, b]) => ({ x: a * CELL, z: b * CELL }));
     this.placeSpots(seed, startCells[0]);
+    // vegetation
+    const bi = BIOMES.indexOf(this.biome);
+    const grass = [0.3, 0.04, 0.02, 0.05][bi], wood = [1, 0.35, 0.6, 0.55][bi], cover = [0.47, 0.6, 0.55, 0.58][bi];
+    this.fuel = new Float32Array(n * n); this.forest = new Float32Array(n * n);
+    for (let cz = 1; cz < n - 1; cz++) for (let cx = 1; cx < n - 1; cx++) {
+      const i = cz * n + cx, x = cx * CELL, z = cz * CELL;
+      const h = H[(cz * 2 + 1) * hn + cx * 2 + 1];
+      if (h < this.waterY + 1) continue;
+      let ds = 1e9; for (const s of this.starts) ds = Math.min(ds, Math.hypot(s.x - x, s.z - z));
+      let f = fbm(x / 170 + 9.1, z / 170 + 3.7, seed + 77, 4);
+      f = smooth(cover, cover + 0.12, f) * smooth(70, 150, ds);
+      if (!pass[i]) f *= 0.35;
+      for (const s of this.spots) if (Math.abs(s.cx - cx) < 3 && Math.abs(s.cz - cz) < 3) f = 0;
+      this.forest[i] = f;
+      this.fuel[i] = Math.min(1, grass * (ds < 90 ? 0.5 : 1) + f * wood);
+    }
     return this.spots.length >= 24;
   }
 
@@ -188,23 +225,23 @@ export class GameMap {
     out.x = -dx / l; out.y = 2 * d / l; out.z = -dz / l;
   }
   inCells(cx: number, cz: number) { return cx >= 0 && cz >= 0 && cx < this.n && cz < this.n; }
-  cellPass(cx: number, cz: number) {
+  cellPass(cx: number, cz: number, nav = false) {
     if (cx < 0 || cz < 0 || cx >= this.n || cz >= this.n) return false;
-    const i = cz * this.n + cx; return this.pass[i] === 1 && this.block[i] === 0;
+    const i = cz * this.n + cx; return (nav ? this.passW[i] : this.pass[i]) === 1 && this.block[i] === 0;
   }
-  passAt(x: number, z: number) { return this.cellPass(Math.floor(x / CELL), Math.floor(z / CELL)); }
+  passAt(x: number, z: number, nav = false) { return this.cellPass(Math.floor(x / CELL), Math.floor(z / CELL), nav); }
   cellOf(x: number, z: number) {
     return clamp(Math.floor(z / CELL), 0, this.n - 1) * this.n + clamp(Math.floor(x / CELL), 0, this.n - 1);
   }
 
-  nearestPass(cx: number, cz: number, maxR: number): number {
+  nearestPass(cx: number, cz: number, maxR: number, nav = false): number {
     const n = this.n;
-    if (this.cellPass(cx, cz)) return cz * n + cx;
+    if (this.cellPass(cx, cz, nav)) return cz * n + cx;
     let best = -1, bd = 1e9;
     for (let r = 1; r <= maxR; r++) {
       for (let j = -r; j <= r; j++) for (let i = -r; i <= r; i++) {
         if (Math.max(Math.abs(i), Math.abs(j)) !== r) continue;
-        if (!this.cellPass(cx + i, cz + j)) continue;
+        if (!this.cellPass(cx + i, cz + j, nav)) continue;
         const d = i * i + j * j;
         if (d < bd) { bd = d; best = (cz + j) * n + cx + i; }
       }
@@ -213,13 +250,13 @@ export class GameMap {
     return -1;
   }
 
-  lineClear(x0: number, z0: number, x1: number, z1: number) {
+  lineClear(x0: number, z0: number, x1: number, z1: number, nav = false) {
     const dx = x1 - x0, dz = z1 - z0, d = Math.hypot(dx, dz);
     if (d < 0.01) return true;
     const steps = Math.ceil(d / 3), ox = -dz / d * 2.6, oz = dx / d * 2.6;
     for (let i = 0; i <= steps; i++) {
       const t = i / steps, x = x0 + dx * t, z = z0 + dz * t;
-      if (!this.passAt(x, z) || !this.passAt(x + ox, z + oz) || !this.passAt(x - ox, z - oz)) return false;
+      if (!this.passAt(x, z, nav) || !this.passAt(x + ox, z + oz, nav) || !this.passAt(x - ox, z - oz, nav)) return false;
     }
     return true;
   }
@@ -249,15 +286,15 @@ export class GameMap {
   }
 
   /** Returns flat [x,z,x,z...] waypoints (excluding start) or null. */
-  findPath(sx: number, sz: number, gx: number, gz: number): number[] | null {
+  findPath(sx: number, sz: number, gx: number, gz: number, nav = false): number[] | null {
     const n = this.n;
     let sc = this.cellOf(sx, sz), gc = this.cellOf(gx, gz);
-    if (!this.cellPass(sc % n, (sc / n) | 0)) { sc = this.nearestPass(sc % n, (sc / n) | 0, 8); if (sc < 0) return null; }
+    if (!this.cellPass(sc % n, (sc / n) | 0, nav)) { sc = this.nearestPass(sc % n, (sc / n) | 0, 8, nav); if (sc < 0) return null; }
     let exact = true;
-    if (!this.cellPass(gc % n, (gc / n) | 0)) { gc = this.nearestPass(gc % n, (gc / n) | 0, 30); if (gc < 0) return null; exact = false; }
+    if (!this.cellPass(gc % n, (gc / n) | 0, nav)) { gc = this.nearestPass(gc % n, (gc / n) | 0, nav ? 60 : 30, nav); if (gc < 0) return null; exact = false; }
     const gcx = gc % n, gcz = (gc / n) | 0;
     const fx = exact ? gx : (gcx + 0.5) * CELL, fz = exact ? gz : (gcz + 0.5) * CELL;
-    if (sc === gc || this.lineClear(sx, sz, fx, fz)) return [fx, fz];
+    if (sc === gc || this.lineClear(sx, sz, fx, fz, nav)) return [fx, fz];
     const sid = ++this.sid; const g = this.g, par = this.par, mark = this.mark, closed = this.closed;
     this.hN.length = 0; this.hF.length = 0;
     const heur = (i: number) => {
@@ -266,7 +303,7 @@ export class GameMap {
     };
     g[sc] = 0; par[sc] = -1; mark[sc] = sid; this.hPush(sc, heur(sc));
     let best = sc, bestH = heur(sc), found = false, exp = 0;
-    const pass = this.pass, block = this.block;
+    const pass = nav ? this.passW : this.pass, block = this.block;
     while (this.hN.length) {
       const cur = this.hPop();
       if (closed[cur] === sid) continue;
@@ -305,7 +342,7 @@ export class GameMap {
     let ax = sx, az = sz, i = 0; const cnt = pts.length / 2;
     while (i < cnt) {
       let j = Math.min(cnt - 1, i + 48);
-      while (j > i && !this.lineClear(ax, az, pts[j * 2], pts[j * 2 + 1])) j--;
+      while (j > i && !this.lineClear(ax, az, pts[j * 2], pts[j * 2 + 1], nav)) j--;
       ax = pts[j * 2]; az = pts[j * 2 + 1]; out.push(ax, az); i = j + 1;
     }
     return out;

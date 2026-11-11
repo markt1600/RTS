@@ -31,7 +31,7 @@ export class UI {
   private lastAlert = -999;
   private tmp = { x: 0, y: 0, ok: false };
   private disposers: (() => void)[] = [];
-  private idleIdx = 0;
+  private idleIdx = 0; private heat = 0;
 
   constructor(game: Game, r: Renderer, me: Team, audio: Audio, icons: Record<string, string>, cb: UICallbacks) {
     this.game = game; this.r = r; this.me = me; this.audio = audio; this.icons = icons; this.cb = cb;
@@ -62,6 +62,9 @@ export class UI {
   private onEvent(e: any, vis: boolean) {
     const c = this.r.cam, a = this.audio;
     const v = vis ? clamp(1.25 - Math.hypot(e.x - c.x, e.z - c.z) / (c.dist * 1.4 + 150), 0, 1) * clamp(600 / c.dist, 0.25, 1) : 0;
+    // battle heat drives the score: what you can see counts, your own losses count double
+    const own = e.u && e.u.team === this.me;
+    if (vis || own) this.heat += (e.t === 'beam' ? 0.12 : e.t === 'muzzle' ? 0.22 : e.t === 'boom' ? 0.25 : e.t === 'die' ? (own ? 2.2 : 1.2) : e.t === 'alert' && own ? (e.u.def.commander ? 6 : 1.5) : 0);
     switch (e.t) {
       case 'beam': a.laser(v, e.big); break;
       case 'muzzle': if (e.k === 'cannon') a.cannon(v, e.size > 1.5); else a.missile(v); break;
@@ -346,6 +349,8 @@ export class UI {
       c.x += (dx * cs + dz * sn) * sp; c.z += (-dx * sn + dz * cs) * sp;
     }
     if (k.has('z')) c.yaw += dt * 1.4; if (k.has('x')) c.yaw -= dt * 1.4;
+    this.heat *= Math.exp(-dt / 6);
+    if (this.audio.music) this.audio.music.intensity = paused ? 0 : 1 - Math.exp(-this.heat / 9);
     // prune selection
     for (const u of this.selected) if (u.dead || !this.r.shown(u)) { this.selected.delete(u); this.panelKey = ''; }
     // placement ghost

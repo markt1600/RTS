@@ -11,14 +11,14 @@ const $ = (id: string) => document.getElementById(id)!;
 const audio = new Audio();
 let icons: Record<string, string> | null = null;
 
-const opts = { diff: 1, opp: 0, size: 1, biome: 4, gfx: 2, seed: Math.floor(Math.random() * 99999) };
+const opts = { diff: 1, opp: 0, size: 1, biome: 4, wet: 0, gfx: 2, seed: Math.floor(Math.random() * 99999) };
 try { Object.assign(opts, JSON.parse(localStorage.getItem('ironveil-opts') || '{}'), { seed: opts.seed }); } catch { /* ignore */ }
 
 function seg(id: string, labels: string[], key: keyof typeof opts) {
   const el = $(id); el.innerHTML = '';
   labels.forEach((l, i) => {
     const b = document.createElement('button'); b.textContent = l; if (opts[key] === i) b.className = 'on';
-    b.onclick = () => { opts[key] = i; seg(id, labels, key); audio.init(); audio.ui('click'); };
+    b.onclick = () => { opts[key] = i; seg(id, labels, key); audio.init(); applyVol(); audio.music?.start(); audio.ui('click'); };
     el.appendChild(b);
   });
 }
@@ -26,22 +26,30 @@ seg('optDiff', DIFFICULTY_NAMES, 'diff');
 seg('optOpp', ['1', '2', '3'], 'opp');
 seg('optSize', ['Small', 'Medium', 'Large'], 'size');
 seg('optBiome', [...BIOMES.map(b => b.name), 'Random'], 'biome');
+seg('optWet', ['Lakes & rivers', 'Open seas (naval)'], 'wet');
 seg('optGfx', ['Low', 'Medium', 'High'], 'gfx');
 const seedEl = $('optSeed') as HTMLInputElement; seedEl.value = '' + opts.seed;
 $('seedRnd').onclick = () => { seedEl.value = '' + Math.floor(Math.random() * 99999); };
 
+const vol = { music: 0.42, sfx: 0.5 };
+try { Object.assign(vol, JSON.parse(localStorage.getItem('ironveil-vol') || '{}')); } catch { /* ignore */ }
+function applyVol() { audio.setVolume(vol.sfx); audio.music?.setVolume(vol.music); }
+for (const k of ['music', 'sfx'] as const) {
+  const el = $('vol' + k) as HTMLInputElement; el.value = '' + Math.round(vol[k] * 100);
+  el.oninput = () => { vol[k] = +el.value / 100; applyVol(); try { localStorage.setItem('ironveil-vol', JSON.stringify(vol)); } catch { /* ignore */ } };
+}
 interface Session { game: Game; r: Renderer; ui: UI; ais: AI[]; me: Team; raf: number; paused: boolean; speed: number; ended: boolean }
 let S: Session | null = null;
 const SPEEDS = [0.5, 1, 1.5, 2, 3];
 
 function start() {
-  audio.init();
+  audio.init(); applyVol(); audio.music?.stop(); audio.music?.start();
   const seed = (parseInt(seedEl.value, 10) || 1) >>> 0;
   try { localStorage.setItem('ironveil-opts', JSON.stringify(opts)); } catch { /* ignore */ }
   const biome = opts.biome === 4 ? seed % 4 : opts.biome;
   const players = [{ ai: false, level: 0, ally: 0 }];
   for (let i = 0; i <= opts.opp; i++) players.push({ ai: true, level: opts.diff, ally: i + 1 });
-  const game = new Game({ n: [112, 144, 176][opts.size], seed, biome, players });
+  const game = new Game({ n: [112, 144, 176][opts.size], seed, biome, wet: opts.wet, players });
   const me = game.teams[0];
   if (!icons) icons = makeIcons();
   const canvas = $('gl') as HTMLCanvasElement;
@@ -75,6 +83,7 @@ function start() {
 
 function showEnd(ses: Session) {
   if (S !== ses) return;
+  audio.music?.finale(!ses.me.dead);
   const g = ses.game, won = !ses.me.dead;
   $('endTitle').textContent = won ? 'VICTORY' : 'DEFEAT';
   ($('endTitle') as HTMLElement).style.color = won ? '#6fe08a' : '#ff6a50';
@@ -88,6 +97,7 @@ function showEnd(ses: Session) {
 function quit() {
   if (!S) return;
   cancelAnimationFrame(S.raf); S.ui.dispose(); S.r.dispose(); S = null;
+  audio.music?.stop(); audio.music?.start();
   $('hud').classList.add('hidden'); $('pause').classList.add('hidden'); $('end').classList.add('hidden'); $('menu').classList.remove('hidden');
   const c = ($('overlay') as HTMLCanvasElement); c.getContext('2d')!.clearRect(0, 0, c.width, c.height);
   // fresh GL canvas for the next battle

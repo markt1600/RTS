@@ -12,7 +12,7 @@ export interface Order {
   target?: Unit | null; wreck?: Wreck; def?: UnitDef; cx?: number; cz?: number; x2?: number; z2?: number;
   s?: boolean; n?: number;
 }
-export interface Wreck { id: number; x: number; y: number; z: number; r: number; metal: number; max: number; dead: boolean; rot: number }
+export interface Wreck { id: number; x: number; y: number; z: number; r: number; metal: number; max: number; dead: boolean; rot: number; born: number }
 export interface Proj {
   k: number; // 0 cannon, 1 missile, 2 bomb
   x: number; y: number; z: number; px: number; py: number; pz: number;
@@ -52,7 +52,7 @@ export class Unit {
   inFactory = false; ejectZ = -1;
   dead = false; spot: Spot | null = null;
   nano: { x: number; y: number; z: number; def?: UnitDef; r?: number } | null = null; nanoTick = -9;
-  seen = 0; lastHit = -999; bank = 0; cx = 0; cz = 0;
+  seen = 0; lastHit = -999; bank = 0; cx = 0; cz = 0; burnTick = -99;
   constructor(def: UnitDef, team: Team) {
     this.def = def; this.team = team;
     const n = def.weapons.length;
@@ -61,7 +61,7 @@ export class Unit {
   }
 }
 
-export interface GameOpts { n: number; seed: number; biome: number; players: { ai: boolean; level: number; ally: number }[] }
+export interface GameOpts { n: number; seed: number; biome: number; wet?: number; players: { ai: boolean; level: number; ally: number }[] }
 
 const GS = 32; // spatial hash cell
 const bit = (u: Unit) => (u.def.cls === 'air' ? 2 : 1);
@@ -69,7 +69,11 @@ const bit = (u: Unit) => (u.def.cls === 'air' ? 2 : 1);
 export class Game {
   map: GameMap; teams: Team[] = []; units: Unit[] = []; wrecks: Wreck[] = []; projs: Proj[] = [];
   events: GameEvent[] = []; tick = 0; nextId = 1; rng: Rng; wind = 0.5;
-  over = false; winner = -1;
+  over = false; winner = -1; windDir = 0;
+  /** fire: remaining burn seconds per cell; burning: active cells; burnt: cells that just burned out (renderer drains) */
+  /** permanent terrain damage; renderer drains `craters` to update its mesh */
+  craters: { x: number; z: number; r: number }[] = []; private origH: Float32Array;
+  flame: Float32Array; burning: number[] = []; burnt: number[] = []; private fireCool: Int32Array;
   occ = new Map<number, Unit>();
   private grid: Unit[][]; private gw: number;
   private pathQ: Unit[] = []; private anyDead = false;
@@ -78,7 +82,10 @@ export class Game {
 
   constructor(opts: GameOpts) {
     this.rng = mulberry32(opts.seed * 31 + 7);
-    this.map = new GameMap(opts.n, opts.seed, opts.biome);
+    this.map = new GameMap(opts.n, opts.seed, opts.biome, opts.wet || 0);
+    this.origH = this.map.heights.slice();
+    this.flame = new Float32Array(opts.n * opts.n); this.fireCool = new Int32Array(opts.n * opts.n);
+    this.windDir = this.rng() * 6.283;
     this.gw = Math.ceil(this.map.size / GS);
     this.grid = []; for (let i = 0; i < this.gw * this.gw; i++) this.grid.push([]);
     const order = opts.players.length === 2 ? [0, 2] : [0, 1, 2, 3];
@@ -116,7 +123,7 @@ export class Game {
   }
   canPlace(def: UnitDef, cx: number, cz: number, team: Team): boolean {
     const m = this.map, n = m.n;
-    if (def.cls !== 'building') return m.cellPass(cx + 1, cz + 1);
+    if (def.cls !== 'building') return m.cellPass(cx + 1, cz + 1, def.naval);
     let upgrade = false;
     if (def.extract) {
       const s = this.spotAt(cx, cz); if (!s) return false;
@@ -129,9 +136,10 @@ export class Game {
     for (let j = 0; j < def.fh; j++) for (let i = 0; i < def.fw; i++) {
       const x = cx + i, z = cz + j;
       if (x < 1 || z < 1 || x >= n - 1 || z >= n - 1) return false;
-      if (!m.pass[z * n + x]) return false;
+      if (!(def.water ? m.passW : m.pass)[z * n + x]) return false;
       if (m.block[z * n + x] && !upgrade) return false;
     }
+    if (def.water) return true;
     for (let j = 0; j <= def.fh; j++) for (let i = 0; i <= def.fw; i++) {
       const h = m.heights[(cz + j) * 2 * m.hn + (cx + i) * 2];
       if (h < lo) lo = h; if (h > hi) hi = h;
@@ -153,7 +161,7 @@ export class Game {
     if (s) { s.taken = u; u.spot = s; }
     // seat on average ground
     let h = 0; for (let j = 0; j <= def.fh; j++) for (let i = 0; i <= def.fw; i++) h = Math.max(h, m.heights[(cz + j) * 2 * m.hn + (cx + i) * 2]);
-    u.y = u.py = h;
+    u.y = u.py = def.water ? m.waterY - 0.3 : h;
     return u;
   }
 
@@ -174,7 +182,7 @@ export class Game {
     const cols = Math.ceil(Math.sqrt(nU)), rows = Math.ceil(nU / cols), S = this.map.size;
     mob.forEach((u, i) => {
       let tx = x + ((i % cols) - (cols - 1) / 2) * sp, tz = z + (Math.floor(i / cols) - (rows - 1) / 2) * sp;
-      if (u.def.cls === 'ground' && !this.map.passAt(tx, tz)) { tx = x; tz = z; }
+      if (u.def.cls === 'ground' && !this.map.passAt(tx, tz, u.def.naval)) { tx = x; tz = z; }
       tx = clamp(tx, 10, S - 10); tz = clamp(tz, 10, S - 10);
       this.give(u, { type, x: tx, z: tz, x2: u.x, z2: u.z }, queue);
     });
@@ -238,6 +246,7 @@ export class Game {
     this.tick++;
     const t = this.tick;
     this.wind = clamp(0.5 + 0.34 * Math.sin(t * 0.004) + 0.16 * Math.sin(t * 0.0131 + 2), 0, 1);
+    this.windDir += Math.sin(t * 0.0021) * 0.0006;
     // economy pass
     for (const tm of this.teams) { tm.pM = tm.pE = tm.uE = tm.sM = tm.sE = 0; }
     for (const u of this.units) {
@@ -270,7 +279,7 @@ export class Game {
     for (let k = 0; k < 10 && this.pathQ.length; k++) {
       const u = this.pathQ.shift()!; u.pathPending = false;
       if (u.dead || !u.goal) continue;
-      u.path = this.map.findPath(u.x, u.z, u.gx, u.gz); u.pi = 0;
+      u.path = this.map.findPath(u.x, u.z, u.gx, u.gz, u.def.naval); u.pi = 0;
       if (!u.path) u.goal = false;
     }
     // blasts queued last tick
@@ -289,6 +298,7 @@ export class Game {
     for (let i = 0; i < len; i++) { const u = this.units[i]; if (!u.dead) this.updateUnit(u); }
     this.updateProjs();
     if (t % 8 === 0) this.updateVision();
+    if (t % 15 === 0 && this.burning.length) this.updateFire();
     // defeated teams collapse
     for (const tm of this.teams) {
       if (!tm.dead) continue;
@@ -528,10 +538,10 @@ export class Game {
   }
 
   private moveGround(u: Unit) {
-    const d = u.def, map = this.map, n = map.n;
+    const d = u.def, map = this.map, n = map.n, nav = d.naval;
     const ccx = Math.floor(u.x / CELL), ccz = Math.floor(u.z / CELL);
-    if (!map.cellPass(ccx, ccz)) {
-      const p = map.nearestPass(ccx, ccz, 8);
+    if (!map.cellPass(ccx, ccz, nav)) {
+      const p = map.nearestPass(ccx, ccz, 10, nav);
       if (p >= 0) {
         const tx = (p % n + 0.5) * CELL, tz = (((p / n) | 0) + 0.5) * CELL, dd = Math.hypot(tx - u.x, tz - u.z) || 1;
         u.x += (tx - u.x) / dd * 26 * DT; u.z += (tz - u.z) / dd * 26 * DT;
@@ -562,7 +572,7 @@ export class Game {
     const list = this.query(nx, nz, d.r + 16);
     for (let i = 0; i < list.length; i++) {
       const o = list[i];
-      if (o === u || o.def.cls !== 'ground' || o.inFactory || o.dead) continue;
+      if (o === u || o.def.cls !== 'ground' || o.inFactory || o.dead || o.def.naval !== nav) continue;
       const dx = nx - o.x, dz = nz - o.z, min = d.r + o.def.r, dist = Math.hypot(dx, dz);
       if (dist < min && dist > 0.01) {
         const wgt = !o.built ? 1 : o.def.r / (d.r + o.def.r);
@@ -570,10 +580,10 @@ export class Game {
         nx += dx * k; nz += dz * k;
       } else if (dist <= 0.01) { nx += (this.rng() - 0.5); nz += (this.rng() - 0.5); }
     }
-    if (map.passAt(nx, nz)) { u.x = nx; u.z = nz; }
-    else if (map.passAt(nx, u.z)) u.x = nx;
-    else if (map.passAt(u.x, nz)) u.z = nz;
-    u.y = map.heightAt(u.x, u.z);
+    if (map.passAt(nx, nz, nav)) { u.x = nx; u.z = nz; }
+    else if (map.passAt(nx, u.z, nav)) u.x = nx;
+    else if (map.passAt(u.x, nz, nav)) u.z = nz;
+    u.y = nav ? map.waterY - 0.4 : map.heightAt(u.x, u.z);
     if (u.goal && u.path && (this.tick + u.id) % 30 === 0) {
       if (Math.hypot(u.x - u.stuckX, u.z - u.stuckZ) < d.speed * 0.25) {
         u.stuck++;
@@ -628,6 +638,84 @@ export class Game {
     u.speed = d.speed;
     u.x += Math.sin(u.heading) * d.speed * DT; u.z += Math.cos(u.heading) * d.speed * DT;
     u.turret = u.heading;
+  }
+
+  /** gouge a permanent crater (bowl + raised rim) into the heightmap */
+  crater(x: number, z: number, r: number, depth: number) {
+    const m = this.map, hn = m.hn, H = m.heights, O = this.origH, R = r * 1.4, n = m.n;
+    const i0 = Math.max(1, Math.floor((x - R) / 4)), i1 = Math.min(hn - 2, Math.ceil((x + R) / 4));
+    const j0 = Math.max(1, Math.floor((z - R) / 4)), j1 = Math.min(hn - 2, Math.ceil((z + R) / 4));
+    let any = false;
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const k = j * hn + i, d = Math.hypot(i * 4 - x, j * 4 - z) / r;
+      if (d >= 1.4 || O[k] < m.waterY + 1.2) continue;
+      const cx = Math.min(n - 1, i >> 1), cz = Math.min(n - 1, j >> 1);
+      if (m.block[cz * n + cx] || m.block[cz * n + Math.max(0, cx - 1)] || m.block[Math.max(0, cz - 1) * n + cx] || m.block[Math.max(0, cz - 1) * n + Math.max(0, cx - 1)]) continue;
+      const delta = d < 1 ? -depth * (1 - d * d) : depth * 0.3 * Math.sin(Math.PI * (d - 1) / 0.4);
+      H[k] = clamp(H[k] + delta, Math.max(O[k] - 5, m.waterY + 1), O[k] + 2);
+      any = true;
+    }
+    if (any) { this.craters.push({ x, z, r: R }); if (this.craters.length > 300) this.craters.shift(); }
+  }
+
+  // ───────────── fire ─────────────
+  /** effective flammability of a cell right now */
+  private fuelAt(c: number): number {
+    const m = this.map;
+    if (m.block[c]) return this.tick < this.fireCool[c] ? 0 : 0.55;
+    if (m.heights[(((c / m.n) | 0) * 2 + 1) * m.hn + (c % m.n) * 2 + 1] < m.waterY + 0.3) return 0;
+    return m.fuel[c];
+  }
+  ignite(c: number) {
+    if (this.flame[c] > 0 || this.burning.length > 1400) return;
+    const f = this.fuelAt(c); if (f <= 0) return;
+    this.flame[c] = 5 + f * 16 * (0.7 + this.rng() * 0.6);
+    this.burning.push(c);
+  }
+  igniteArea(x: number, z: number, r: number, p: number) {
+    const m = this.map, n = m.n, cr = Math.ceil(r / CELL);
+    const cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
+    for (let j = -cr; j <= cr; j++) for (let i = -cr; i <= cr; i++) {
+      const a = cx + i, b = cz + j;
+      if (a < 0 || b < 0 || a >= n || b >= n || Math.hypot(i, j) * CELL > r + 4) continue;
+      const c = b * n + a, f = this.fuelAt(c);
+      if (f > 0 && this.rng() < p * (0.35 + f)) this.ignite(c);
+    }
+  }
+  private updateFire() {
+    const m = this.map, n = m.n, STEP = 0.5;
+    const wx = Math.sin(this.windDir), wz = Math.cos(this.windDir);
+    const list = this.burning, keep: number[] = [], L = list.length;
+    for (let k = 0; k < L; k++) {
+      const c = list[k], cx = c % n, cz = (c / n) | 0;
+      this.flame[c] -= STEP;
+      // burn whatever stands here
+      const us = this.query((cx + 0.5) * CELL, (cz + 0.5) * CELL, 20);
+      for (let i = 0; i < us.length; i++) {
+        const u = us[i];
+        if (u.dead || u.burnTick === this.tick || u.def.cls === 'air' || u.def.naval || u.inFactory) continue;
+        if (u.def.cls === 'building') {
+          if (cx < u.cx || cz < u.cz || cx >= u.cx + u.def.fw || cz >= u.cz + u.def.fh) continue;
+          u.burnTick = this.tick; this.damage(u, 8 * STEP + u.def.hp * 0.004 * STEP, null);
+        } else if (Math.abs(u.x - (cx + 0.5) * CELL) < CELL * 0.75 && Math.abs(u.z - (cz + 0.5) * CELL) < CELL * 0.75) {
+          u.burnTick = this.tick; this.damage(u, 11 * STEP, null);
+        }
+      }
+      // spread
+      for (let d = 0; d < 4; d++) {
+        const dx = d === 0 ? 1 : d === 1 ? -1 : 0, dz = d === 2 ? 1 : d === 3 ? -1 : 0;
+        const a = cx + dx, b = cz + dz; if (a < 1 || b < 1 || a >= n - 1 || b >= n - 1) continue;
+        const c2 = b * n + a; if (this.flame[c2] > 0) continue;
+        const f = this.fuelAt(c2); if (f <= 0) continue;
+        const wind = 1 + (dx * wx + dz * wz) * 0.8 * this.wind;
+        if (this.rng() < 0.085 * f * f * wind) this.ignite(c2);
+      }
+      if (this.flame[c] > 0) keep.push(c);
+      else { this.flame[c] = 0; m.fuel[c] = 0; m.forest[c] = 0; this.fireCool[c] = this.tick + 45 * TICK; this.burnt.push(c); }
+    }
+    // cells ignited during this pass were appended after index L
+    this.burning = keep.concat(list.slice(L));
+    if (this.burnt.length > 4000) this.burnt.splice(0, 2000);
   }
 
   // ───────────── combat ─────────────
@@ -744,6 +832,10 @@ export class Game {
   private explode(p: Proj, x: number, y: number, z: number) {
     const w = p.w, sp = w.splash || 0;
     this.events.push({ t: 'boom', x, y, z, size: sp ? sp * 0.5 : 4 + w.dmg * 0.02, c: w.color });
+    if (y < this.map.groundY(x, z) + 14) {
+      this.igniteArea(x, z, sp ? sp * 0.55 : 5, sp ? 0.5 : 0.3);
+      if (sp >= 22) this.crater(x, z, sp * 0.5, Math.min(3, sp * 0.06));
+    }
     if (sp > 0) {
       const list = this.query(x, z, sp + 20).slice();
       for (const o of list) {
@@ -785,7 +877,9 @@ export class Game {
     this.events.push({ t: 'die', x: u.x, y: u.y, z: u.z, size: d.r, u });
     if (u.built) {
       u.team.stats.lost++; if (by && by !== u.team) by.stats.kills++;
-      if (d.cls !== 'air' && !u.team.dead) this.wrecks.push({ id: this.nextId++, x: u.x, y: m.groundY(u.x, u.z), z: u.z, r: Math.min(d.r, 9), metal: d.m * 0.5, max: d.m * 0.5, dead: false, rot: this.rng() * 6.28 });
+      if (d.cls !== 'air' && !d.naval && !d.water && !u.team.dead) this.wrecks.push({ id: this.nextId++, x: u.x, y: m.groundY(u.x, u.z), z: u.z, r: Math.min(d.r, 9), metal: d.m * 0.5, max: d.m * 0.5, dead: false, rot: this.rng() * 6.28, born: this.tick });
+      if (d.cls !== 'air') this.igniteArea(u.x, u.z, d.r * 0.8, 0.6);
+      if (d.blast) this.crater(u.x, u.z, d.blast.r * 0.3, 4); else if (d.r >= 5 && d.cls !== 'air') this.crater(u.x, u.z, d.r * 0.9, 1.1);
       if (d.blast) this.blasts.push({ x: u.x, z: u.z, r: d.blast.r, d: d.blast.d });
     }
     if (u === u.team.prime) { u.team.dead = true; u.team.prime = null; }

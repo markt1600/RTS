@@ -28,7 +28,7 @@ export interface UnitDef {
   weapons: WeaponDef[];
   alt: number; hover: boolean;
   blast: { r: number; d: number } | null;
-  commander: boolean; bot: boolean; noChase: boolean;
+  commander: boolean; bot: boolean; noChase: boolean; naval: boolean; water: boolean;
   model: Model;
 }
 
@@ -58,7 +58,7 @@ const pad = (w: number, l: number, hh = 1): Part[] => [
 const base = {
   tier: 1, speed: 0, turn: 0, r: 4, h: 5, fw: 1, fh: 1, sight: 150, radar: 0, bp: 0, buildRange: 42,
   builds: [] as string[], factory: false, mkM: 0, mkE: 0, useE: 0, stM: 0, stE: 0, extract: 0, wind: 0, conv: 0,
-  weapons: [] as WeaponDef[], alt: 0, hover: false, blast: null, commander: false, bot: false, noChase: false,
+  weapons: [] as WeaponDef[], alt: 0, hover: false, blast: null, commander: false, bot: false, noChase: false, naval: false, water: false,
 };
 export const DEFS: Record<string, UnitDef> = {};
 export const DEF_LIST: UnitDef[] = [];
@@ -68,9 +68,9 @@ function U(d: Partial<UnitDef> & { id: string; name: string; desc: string; cls: 
   DEFS[def.id] = def; DEF_LIST.push(def);
 }
 
-const T1_BUILD = ['extractor', 'solar', 'wind', 'estore', 'mstore', 'foundry', 'works', 'aerodrome', 'sentry', 'flak', 'radar'];
-const CON_BUILD = ['extractor', 'solar', 'wind', 'estore', 'mstore', 'converter', 'foundry', 'works', 'aerodrome', 'advforge', 'sentry', 'bastion', 'flak', 'radar'];
-const T2_BUILD = ['deepext', 'fusion', 'estore', 'mstore', 'converter', 'advforge', 'foundry', 'works', 'aerodrome', 'sunlance', 'thunderhead', 'bastion', 'flak', 'radar', 'colossus'];
+const T1_BUILD = ['extractor', 'solar', 'wind', 'tidal', 'estore', 'mstore', 'foundry', 'works', 'aerodrome', 'shipyard', 'sentry', 'flak', 'radar'];
+const CON_BUILD = ['extractor', 'solar', 'wind', 'tidal', 'estore', 'mstore', 'converter', 'foundry', 'works', 'aerodrome', 'shipyard', 'advforge', 'sentry', 'bastion', 'flak', 'radar'];
+const T2_BUILD = ['deepext', 'fusion', 'tidal', 'estore', 'mstore', 'converter', 'advforge', 'foundry', 'works', 'aerodrome', 'shipyard', 'sunlance', 'thunderhead', 'bastion', 'flak', 'radar', 'colossus'];
 
 // ───────────────────────── Commander ─────────────────────────
 U({
@@ -184,7 +184,7 @@ U({
   builds: ['kestrel', 'talon', 'anvil', 'vulture'],
   model: {
     sp: [-15, 14.6, -15], sa: 'y', ss: 1.6,
-    parts: [B(39, 1, 39, 0, 0.5, 0, 'D'), C(13, 13, 0.4, 0, 1.2, 2, 'M'), C(10, 10, 0.3, 0, 1.4, 2, 'D'), B(2, 0.2, 14, 0, 1.6, 2, 'Y'), B(14, 0.2, 2, 0, 1.6, 2, 'Y'),
+    parts: [B(39, 1, 39, 0, 0.5, 0, 'D'), C(13, 13, 0.4, 0, 1.2, 2, 'M'), C(10, 10, 0.3, 0, 1.4, 2, 'D'), B(1.2, 0.2, 14, 0, 1.6, 2, 'L'), B(14, 0.2, 1.2, 0, 1.6, 2, 'L'),
       B(8, 12, 8, -15, 7, -15, 'T'), B(6, 0.6, 1.4, 0, 0, 0, 'L', 's'), B(2, 2.4, 2, 0, -0.8, 0, 'M', 's'),
       B(10, 4, 6, 14, 3, -16, 'T'), B(1, 0.6, 1, 17, 1.4, 17, 'Y'), B(1, 0.6, 1, -17, 1.4, 17, 'Y')],
   },
@@ -393,6 +393,58 @@ U({
     BR(1.6, 11, -12, 19, 3, 'M'), BR(1, 13, -12, 19, 3, 'R'), BR(1.4, 9, 12, 20, 3), BR(1.4, 9, 12, 17.6, 3),
     B(12, 8, 4, 0, 22, -7, 'D', 't'), C(0.5, 0.5, 8, 6, 30, -7, 'L', 't'), B(4, 4, 6, -5, 28.6, -4, 'D', 't', [-0.5, 0, 0]),
   ] },
+});
+
+// ───────────────────────── Naval ─────────────────────────
+const hull = (w: number, l: number, h: number, c: string): Part[] => [
+  B(w, h, l * 0.7, 0, h / 2 - 0.6, -l * 0.1, 'D'), B(w * 0.72, h, w * 0.72, 0, h / 2 - 0.6, l * 0.25, 'D', undefined, [0, Math.PI / 4, 0]),
+  B(w * 0.86, 0.6, l * 0.68, 0, h - 0.4, -l * 0.1, c), B(w * 0.6, 0.6, w * 0.6, 0, h - 0.4, l * 0.24, c, undefined, [0, Math.PI / 4, 0]),
+];
+U({
+  id: 'tidal', name: 'Tidal Turbine', desc: 'Offshore generator. Steady +22. Water only.', cls: 'building', water: true,
+  hp: 420, m: 110, e: 300, work: 380, fw: 2, fh: 2, h: 6, mkE: 22, sight: 90,
+  model: { sp: [0, 3.4, 0], sa: 'y', ss: 2.4, parts: [C(6.5, 7, 1.6, 0, 0.4, 0, 'D'), C(5.6, 6.2, 1, 0, 1.6, 0, 'T'), C(1.4, 2, 2, 0, 2.8, 0, 'M'),
+    B(10, 0.5, 1.6, 0, 0.4, 0, 'L', 's'), B(1.6, 0.5, 10, 0, 0.4, 0, 'L', 's'), S(1.2, 0, 0.9, 0, 'G', 's')] },
+});
+U({
+  id: 'shipyard', name: 'Shipyard', desc: 'Builds warships. Must be placed on water near shore.', cls: 'building', water: true,
+  hp: 3200, m: 700, e: 1400, work: 1500, fw: 5, fh: 5, h: 12, bp: 22, factory: true, sight: 130,
+  builds: ['skiff', 'corsair', 'leviathan'],
+  model: { parts: [B(6, 3, 38, -16.5, 1, 0, 'D'), B(6, 3, 38, 16.5, 1, 0, 'D'), B(39, 3, 6, 0, 1, -16.5, 'D'),
+    B(5, 0.5, 37, -16.5, 2.7, 0, 'T'), B(5, 0.5, 37, 16.5, 2.7, 0, 'T'), B(38, 0.5, 5, 0, 2.7, -16.5, 'T'),
+    B(2, 10, 2, -16.5, 7.5, -12, 'M'), B(2, 10, 2, 16.5, 7.5, -12, 'M'), B(36, 2, 3, 0, 12, -12, 'Y'), B(3, 3, 5, 6, 10, -12, 'D'),
+    B(6, 5, 7, -16.5, 5, 8, 'T'), B(4, 1.4, 5, -16.5, 8, 8, 'L'), C(1.2, 1.2, 5, 16.5, 5, 10, 'L'), B(1, 0.5, 1, 16.5, 3.2, 17, 'R'), B(1, 0.5, 1, -16.5, 3.2, 17, 'R')] },
+});
+U({
+  id: 'skiff', name: 'Skiff', desc: 'Fast patrol boat.', cls: 'ground', naval: true,
+  hp: 620, m: 90, e: 900, work: 400, speed: 31, turn: 2.4, r: 4.4, h: 5, sight: 220,
+  weapons: [{ k: 'laser', range: 135, reload: 0.4, dmg: 13, tg: 1, color: 0xffe060 }],
+  model: { tp: [0, 3.2, -0.5], parts: [...hull(4.4, 11, 2.4, 'T'), B(2.8, 1.6, 3.4, 0, 3, -2.4, 'L'), B(2.4, 0.5, 0.2, 0, 3.2, -0.65, 'G'),
+    B(2, 1, 2, 0, 3.7, -0.5, 'D', 't'), BR(0.3, 2.6, -0.5, 3.8, 0.3), BR(0.3, 2.6, 0.5, 3.8, 0.3), B(0.2, 2.4, 0.2, 0, 5, -3.4, 'L')] },
+});
+U({
+  id: 'corsair', name: 'Corsair', desc: 'Destroyer. Deck gun and anti-air missiles.', cls: 'ground', naval: true,
+  hp: 3400, m: 420, e: 3800, work: 1500, speed: 21, turn: 1.5, r: 8, h: 8, sight: 260,
+  weapons: [
+    { k: 'cannon', range: 265, reload: 1.6, dmg: 150, splash: 18, speed: 220, arc: 0.14, spread: 0.03, tg: 1, color: 0xffa040, turn: 2.2 },
+    { k: 'missile', range: 250, reload: 1.3, dmg: 85, speed: 300, tg: 2, color: 0xfff0a0, free: true },
+  ],
+  model: { tp: [0, 4.2, 3], parts: [...hull(7.4, 22, 3.4, 'T'), B(4.6, 3, 7, 0, 4.6, -3.4, 'L'), B(4, 0.6, 0.3, 0, 5.2, 0.15, 'G'), B(3, 2, 3.4, 0, 7, -4, 'D'), B(0.3, 4, 0.3, 0, 10, -4, 'L'), B(2.4, 0.3, 0.5, 0, 10.4, -4, 'L'),
+    C(1.2, 1.5, 3, 0, 5, -8.4, 'D'), B(4, 1.6, 4.4, 0, 4.2, 3, 'T', 't'), BR(0.5, 5.4, 0, 4.4, 5), B(2.2, 2.2, 2.6, 0, 4.2, -11.2, 'D', undefined, [-0.5, 0, 0]), B(1.6, 1.6, 0.3, 0, 5, -10.2, 'R', undefined, [-0.5, 0, 0])] },
+});
+U({
+  id: 'leviathan', name: 'Leviathan', desc: 'Battleship. Shore-shattering long-range guns.', cls: 'ground', naval: true, tier: 2,
+  hp: 15000, m: 2400, e: 22000, work: 7000, speed: 13.5, turn: 0.9, r: 13, h: 12, sight: 320,
+  weapons: [
+    { k: 'cannon', range: 520, min: 60, reload: 3, dmg: 520, splash: 36, speed: 250, arc: 0.24, spread: 0.035, tg: 1, color: 0xffb050, turn: 1.2 },
+    { k: 'cannon', range: 480, min: 60, reload: 3.4, dmg: 520, splash: 36, speed: 250, arc: 0.24, spread: 0.04, tg: 1, color: 0xffb050, free: true },
+    { k: 'missile', range: 280, reload: 0.9, dmg: 100, speed: 320, tg: 2, color: 0xfff0a0, free: true },
+  ],
+  model: { tp: [0, 6, 9], parts: [...hull(12, 38, 5, 'T'), B(8, 4, 12, 0, 7, -4, 'L'), B(6, 3, 7, 0, 10.4, -5, 'D'), B(5, 0.8, 0.3, 0, 11, -1.4, 'G'), B(3.4, 3, 3.4, 0, 13.4, -5, 'L'),
+    B(0.4, 6, 0.4, 0, 18, -5, 'L'), B(4, 0.4, 0.6, 0, 19, -5, 'L'), C(1.8, 2.2, 5, 0, 8, -11.5, 'D'), C(1.5, 1.8, 4, 0, 7.6, -15.5, 'D'),
+    B(7, 2.6, 7.4, 0, 6.2, 9, 'T', 't'), BR(0.8, 9, -1.8, 6.6, 12), BR(0.8, 9, 0, 6.6, 12), BR(0.8, 9, 1.8, 6.6, 12), B(7.4, 0.6, 3, 0, 7.8, 7.4, 'D', 't'),
+    B(6, 2.2, 6, 0, 5.8, -20.5, 'T'), BR(0.7, 6, -1.4, 6.2, -26, 'M', 'b'), BR(0.7, 6, 1.4, 6.2, -26, 'M', 'b'),
+    B(2.4, 2.4, 3, -4.4, 6.6, -4, 'D', undefined, [-0.5, 0, 0]), B(2.4, 2.4, 3, 4.4, 6.6, -4, 'D', undefined, [-0.5, 0, 0])] },
 });
 
 export const TEAM_COLORS = [0x2f8cff, 0xff4030, 0x38d058, 0xffc020];
